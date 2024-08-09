@@ -1,0 +1,256 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a, "SafeMath: subtraction overflow");
+        uint256 c = a - b;
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "SafeMath: division by zero");
+        uint256 c = a / b;
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b != 0, "SafeMath: modulo by zero");
+        return a % b;
+    }
+}
+
+contract OlympusSentinelToken is Ownable {
+    using SafeMath for uint256;
+
+    mapping(address => uint256) public balances;
+    mapping(address => mapping(address => uint256)) public allowances;
+    mapping(address => uint256) public stakingBalance;
+    mapping(address => uint256) public lastUpdateTime;
+    mapping(address => uint256) public rewards;
+    mapping(address => address) public referrals;
+
+    uint256 public rewardRate = 100; // Tokens rewarded per second staked
+
+    uint256 public totalSupply;
+    uint256 public maxSupply = 1_500_000_000 * 10 ** 18; // 1.5 billion tokens cap
+    string public name = "Olympus Sentinel";
+    string public symbol = "OLS";
+    uint8 public decimals = 18;
+
+    uint256 public burnFee = 1; // 1% fee for burning
+    uint256 public dividendPool;
+
+    address[] public allTokenHolders; // Array to keep track of all token holders
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event TransferDetails(address indexed from, address indexed to, uint256 value, string message);
+    event Staked(address indexed user, uint256 amount, uint256 time);
+    event Unstaked(address indexed user, uint256 amount, uint256 time);
+    event RewardPaid(address indexed user, uint256 reward);
+    event DividendPaid(address indexed user, uint256 amount);
+    event ReferralSet(address indexed referrer, address indexed referee);
+
+    constructor() {
+        address ownerAddress = 0x8bAC368FF0af27C189538b3BC17399a5FA79Ab1f;
+
+        uint256 ownerTokens = 150_000_000 * 10 ** 18; // 15%
+        uint256 otherTokens = 850_000_000 * 10 ** 18; // 85%
+
+        totalSupply = ownerTokens + otherTokens;
+        balances[ownerAddress] = ownerTokens;
+        emit Transfer(address(0), ownerAddress, ownerTokens);
+
+        allTokenHolders.push(ownerAddress);
+    }
+
+    function balanceOf(address owner) public view returns (uint256) {
+        return balances[owner];
+    }
+
+    function allowance(address owner, address spender) public view returns (uint256) {
+        return allowances[owner][spender];
+    }
+
+    function _updateTokenHolders(address account) internal {
+        if (balances[account] > 0 && !isTokenHolder(account)) {
+            allTokenHolders.push(account);
+        }
+        if (balances[account] == 0) {
+            for (uint256 i = 0; i < allTokenHolders.length; i++) {
+                if (allTokenHolders[i] == account) {
+                    allTokenHolders[i] = allTokenHolders[allTokenHolders.length - 1];
+                    allTokenHolders.pop();
+                    break;
+                }
+            }
+        }
+    }
+
+    function isTokenHolder(address account) internal view returns (bool) {
+        for (uint256 i = 0; i < allTokenHolders.length; i++) {
+            if (allTokenHolders[i] == account) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function transfer(address to, uint256 value) public returns (bool) {
+        require(balances[msg.sender] >= value, 'Balance too low');
+        uint256 burnAmount = value.mul(burnFee).div(100);
+        uint256 amountAfterFee = value.sub(burnAmount);
+
+        _transfer(msg.sender, to, amountAfterFee);
+        _burn(msg.sender, burnAmount);
+
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) public returns (bool) {
+        require(balances[from] >= value, 'Balance too low');
+        require(allowances[from][msg.sender] >= value, 'Allowance too low');
+
+        uint256 burnAmount = value.mul(burnFee).div(100);
+        uint256 amountAfterFee = value.sub(burnAmount);
+
+        _transfer(from, to, amountAfterFee);
+        _burn(from, burnAmount);
+
+        allowances[from][msg.sender] = allowances[from][msg.sender].sub(value);
+        emit Approval(from, msg.sender, allowances[from][msg.sender]);
+
+        return true;
+    }
+
+    function approve(address spender, uint256 value) public returns (bool) {
+        allowances[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function transferWithMessage(address to, uint256 value, string memory message) public returns (bool) {
+        require(balances[msg.sender] >= value, 'Balance too low');
+
+        uint256 burnAmount = value.mul(burnFee).div(100);
+        uint256 amountAfterFee = value.sub(burnAmount);
+
+        _transfer(msg.sender, to, amountAfterFee);
+        _burn(msg.sender, burnAmount);
+
+        emit TransferDetails(msg.sender, to, amountAfterFee, message);
+
+        return true;
+    }
+
+    function _transfer(address from, address to, uint256 value) internal {
+        require(to != address(0), 'Invalid address');
+        balances[from] = balances[from].sub(value);
+        balances[to] = balances[to].add(value);
+        emit Transfer(from, to, value);
+
+        _updateTokenHholders(from);
+        _updateTokenHolders(to);
+    }
+
+    function _burn(address from, uint256 value) internal {
+        require(value <= balances[from], "Burn amount exceeds balance");
+        balances[from] = balances[from].sub(value);
+        totalSupply = totalSupply.sub(value);
+        emit Transfer(from, address(0), value);
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public returns (bool) {
+        allowances[msg.sender][spender] = allowances[msg.sender][spender].add(addedValue);
+        emit Approval(msg.sender, spender, allowances[msg.sender][spender]);
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public returns (bool) {
+        uint256 currentAllowance = allowances[msg.sender][spender];
+        require(currentAllowance >= subtractedValue, "Decreased allowance below zero");
+        allowances[msg.sender][spender] = currentAllowance.sub(subtractedValue);
+        emit Approval(msg.sender, spender, allowances[msg.sender][spender]);
+        return true;
+    }
+
+    function batchTransfer(address[] memory recipients, uint256[] memory values) public returns (bool) {
+        require(recipients.length == values.length, "Mismatched arrays");
+        for (uint256 i = 0; i < recipients.length; i++) {
+            require(transfer(recipients[i], values[i]));
+        }
+        return true;
+    }
+
+    function airdrop(address[] memory recipients, uint256 value) public onlyOwner returns (bool) {
+        for (uint256 i = 0; i < recipients.length; i++) {
+            require(transfer(recipients[i], value));
+        }
+        return true;
+    }
+
+    function stake(uint256 amount) public {
+        require(balances[msg.sender] >= amount, "Insufficient balance to stake");
+        updateReward(msg.sender);
+
+        balances[msg.sender
